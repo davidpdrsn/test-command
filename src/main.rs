@@ -25,6 +25,7 @@ fn main() -> Result<()> {
 
     let language_impl = identify_language(&cli.file)?;
     let test_command = language_impl.test_command(&cli.file, cli.line)?;
+    let test_command = tmux_wrap(test_command)?;
     let mut stdout = stdout().lock();
     serde_json::to_writer(&mut stdout, &test_command)?;
 
@@ -53,4 +54,57 @@ struct TestCommand {
 
 trait Language {
     fn test_command(&self, file: &Path, line: usize) -> Result<TestCommand>;
+}
+
+fn tmux_wrap(test_command: TestCommand) -> Result<TestCommand> {
+    if std::env::var("TERM_PROGRAM")
+        .ok()
+        .is_none_or(|p| p != "tmux")
+    {
+        return Ok(test_command);
+    }
+
+    let panes = command(
+        "tmux",
+        [
+            "list-panes".to_owned(),
+            "-F".to_owned(),
+            "#{pane_index} #{pane_current_command}".to_owned(),
+        ],
+    )?;
+
+    if let Some(free_pane) = panes
+        .lines()
+        .filter_map(|line| line.split_once(' '))
+        .filter(|(_, cmd)| *cmd == "zsh")
+        .map(|(n, _)| n)
+        .next()
+    {
+        Ok(TestCommand {
+            command: "tmux".to_owned(),
+            args: Vec::from([
+                "send-keys".to_owned(),
+                "-t".to_owned(),
+                free_pane.to_owned(),
+                format!(
+                    "\"clear && {} {}\"",
+                    test_command.command,
+                    test_command.args.join(" ")
+                ),
+                "Enter".to_owned(),
+            ]),
+            statusline: test_command.statusline,
+        })
+    } else {
+        Ok(test_command)
+    }
+}
+
+fn command<I>(command: &str, args: I) -> Result<String>
+where
+    I: IntoIterator<Item: AsRef<std::ffi::OsStr>>,
+{
+    let output = std::process::Command::new(command).args(args).output()?;
+    color_eyre::eyre::ensure!(output.status.success(), "`{}` failed", command);
+    Ok(String::from_utf8(output.stdout)?)
 }
