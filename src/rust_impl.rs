@@ -14,7 +14,7 @@ pub struct RustImpl;
 
 impl Language for RustImpl {
     fn test_command(&self, file: &Path, line: usize) -> Result<TestCommand> {
-        let cargo_toml = self.parent_cargo_toml(file)?;
+        let cargo_toml = self.parent_cargo_toml()?;
         let cargo_toml = std::fs::read_to_string(cargo_toml)?;
         let cargo_toml = toml::from_str::<CargoToml>(&cargo_toml)?;
 
@@ -123,21 +123,19 @@ impl RustImpl {
         Ok(mods)
     }
 
-    fn parent_cargo_toml(self, path: &Path) -> Result<PathBuf> {
-        let mut parent = path.parent();
-        while let Some(path) = parent {
-            for entry in path.read_dir()?.filter_map(Result::ok) {
-                if let Some(file_name) = entry.path().file_name()
-                    && file_name == "Cargo.toml"
-                {
-                    return Ok(entry.path());
-                }
-            }
-
-            parent = path.parent();
+    fn parent_cargo_toml(self) -> Result<PathBuf> {
+        #[derive(Deserialize)]
+        struct CargoMetadata {
+            workspace_root: String,
         }
 
-        bail!("no parent Cargo.toml file found")
+        let output = std::process::Command::new("cargo")
+            .args(["metadata"])
+            .output()
+            .context("`cargo metadata` failed")?;
+        let output = String::from_utf8(output.stdout)?;
+        let output = serde_json::from_str::<CargoMetadata>(&output)?;
+        Ok(Path::new(&output.workspace_root).join("Cargo.toml"))
     }
 
     fn parent_file_mods(self, path: &Path) -> Result<Vec<String>> {
