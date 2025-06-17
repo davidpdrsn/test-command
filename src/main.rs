@@ -1,10 +1,13 @@
 use std::{
-    io::stdout,
+    io::{stdout, IsTerminal},
     path::{Path, PathBuf},
 };
 
-use color_eyre::eyre::{Result, bail};
+use color_eyre::eyre::{bail, ensure, Result};
 use serde::Serialize;
+
+#[cfg(test)]
+mod tests;
 
 mod go_impl;
 mod rust_impl;
@@ -16,6 +19,8 @@ struct Cli {
     file: PathBuf,
     #[arg(long, short)]
     line: usize,
+    #[arg(long, short)]
+    debugger: bool,
 }
 
 fn main() -> Result<()> {
@@ -23,21 +28,26 @@ fn main() -> Result<()> {
 
     let cli = <Cli as clap::Parser>::parse();
 
-    let language_impl = identify_language(&cli.file)?;
+    let language_impl = identify_language(&cli.file, cli.debugger)?;
     let test_command = language_impl.test_command(&cli.file, cli.line)?;
-    // let test_command = tmux_wrap(test_command)?;
     let mut stdout = stdout().lock();
-    serde_json::to_writer(&mut stdout, &test_command)?;
+    if stdout.is_terminal() {
+        serde_json::to_writer_pretty(&mut stdout, &test_command)?;
+        println!();
+    } else {
+        serde_json::to_writer(&mut stdout, &test_command)?;
+    }
 
     Ok(())
 }
 
-fn identify_language(file: &Path) -> Result<Box<dyn Language>> {
+fn identify_language(file: &Path, debugger: bool) -> Result<Box<dyn Language>> {
     if let Some(ext) = file.extension() {
         if ext == "rs" {
+            ensure!(!debugger, "rust doesn't support debugging");
             return Ok(Box::new(rust_impl::RustImpl));
         } else if ext == "go" {
-            return Ok(Box::new(go_impl::GoImpl));
+            return Ok(Box::new(go_impl::GoImpl { debugger }));
         }
     }
 

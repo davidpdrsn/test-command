@@ -6,7 +6,9 @@ use tree_sitter::{Node, Parser};
 use crate::{Language, TestCommand, tree_sitter_utils::walk_children};
 
 #[derive(Debug, Clone, Copy)]
-pub struct GoImpl;
+pub struct GoImpl {
+    pub debugger: bool,
+}
 
 impl Language for GoImpl {
     fn test_command(&self, file: &Path, line: usize) -> Result<TestCommand> {
@@ -43,34 +45,81 @@ impl Language for GoImpl {
             }
         };
 
-        let mut args = Vec::from(["test".to_owned(), "-count=1".to_owned()]);
-
-        let mut function_name = None;
-        if let Some(parent_function) = self.parent_test_function(node_at_line, &source)? {
-            if parent_function.kind() == "method_declaration" {
-                let identifier = parent_function.child(2).unwrap();
-                function_name = Some(identifier.utf8_text(source.as_bytes())?);
-                args.extend(["-run".to_owned(), format!("/{}$", function_name.unwrap())]);
-            } else if parent_function.kind() == "function_declaration" {
-                let identifier = parent_function.child(1).unwrap();
-                function_name = Some(identifier.utf8_text(source.as_bytes())?);
-                args.extend(["-run".to_owned(), format!("{}$", function_name.unwrap())]);
+        let function_name =
+            if let Some(parent_function) = self.parent_test_function(node_at_line, &source)? {
+                if parent_function.kind() == "method_declaration" {
+                    let identifier = parent_function.child(2).unwrap();
+                    Some(FuncName::Method(identifier.utf8_text(source.as_bytes())?))
+                } else if parent_function.kind() == "function_declaration" {
+                    let identifier = parent_function.child(1).unwrap();
+                    Some(FuncName::Func(identifier.utf8_text(source.as_bytes())?))
+                } else {
+                    bail!("failed to parse function node: {parent_function:?}");
+                }
             } else {
-                bail!("failed to parse function node: {parent_function:?}");
+                None
+            };
+
+        if self.debugger {
+            let mut args = Vec::from([
+                "test".to_owned(),
+                file.parent().unwrap().to_str().unwrap().to_owned(),
+                "--headless".to_owned(),
+                "-l".to_owned(),
+                "127.0.0.1:38697".to_owned(),
+                "--".to_owned(),
+                "-test.run".to_owned(),
+            ]);
+
+            if let Some(function_name) = function_name {
+                match function_name {
+                    FuncName::Func(name) => {
+                        args.push(format!("{name}$"));
+                    }
+                    FuncName::Method(name) => {
+                        args.push(format!("/{name}$"));
+                    }
+                }
             }
+
+            Ok(TestCommand {
+                command: "dlv".to_owned(),
+                args,
+                statusline: format!(
+                    "🪲 {}",
+                    if let Some(function_name) = function_name {
+                        function_name.to_owned()
+                    } else {
+                        file.file_name().unwrap().to_str().unwrap().to_owned()
+                    }
+                ),
+            })
+        } else {
+            let mut args = Vec::from(["test".to_owned(), "-count=1".to_owned()]);
+
+            if let Some(function_name) = function_name {
+                match function_name {
+                    FuncName::Func(name) => {
+                        args.extend(["-run".to_owned(), format!("{name}$")]);
+                    }
+                    FuncName::Method(name) => {
+                        args.extend(["-run".to_owned(), format!("/{name}$")]);
+                    }
+                }
+            }
+
+            args.push(file.parent().unwrap().to_str().unwrap().to_owned());
+
+            Ok(TestCommand {
+                command: "go".to_owned(),
+                args,
+                statusline: if let Some(function_name) = function_name {
+                    function_name.to_owned()
+                } else {
+                    file.file_name().unwrap().to_str().unwrap().to_owned()
+                },
+            })
         }
-
-        args.push(file.parent().unwrap().to_str().unwrap().to_owned());
-
-        Ok(TestCommand {
-            command: "go".to_owned(),
-            args,
-            statusline: if let Some(function_name) = function_name {
-                function_name.to_owned()
-            } else {
-                file.file_name().unwrap().to_str().unwrap().to_owned()
-            },
-        })
     }
 }
 
@@ -93,5 +142,19 @@ impl GoImpl {
             parent = node.parent();
         }
         Ok(None)
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+enum FuncName<'a> {
+    Func(&'a str),
+    Method(&'a str),
+}
+
+impl<'a> FuncName<'a> {
+    fn to_owned(self) -> String {
+        match self {
+            FuncName::Func(s) | FuncName::Method(s) => s.to_string(),
+        }
     }
 }
