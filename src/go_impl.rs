@@ -3,15 +3,13 @@ use std::{ops::ControlFlow, path::Path};
 use color_eyre::eyre::{Context as _, ContextCompat, Result, bail};
 use tree_sitter::{Node, Parser};
 
-use crate::{Language, TestCommand, tree_sitter_utils::walk_children};
+use crate::{Language, TestCommand, TestCommands, tree_sitter_utils::walk_children};
 
 #[derive(Debug, Clone, Copy)]
-pub struct GoImpl {
-    pub debugger: bool,
-}
+pub struct GoImpl;
 
 impl Language for GoImpl {
-    fn test_command(&self, file: &Path, line: usize) -> Result<TestCommand> {
+    fn test_commands(&self, file: &Path, line: usize) -> Result<TestCommands> {
         let mut parser = Parser::new();
 
         parser
@@ -60,8 +58,45 @@ impl Language for GoImpl {
                 None
             };
 
-        if self.debugger {
-            let mut args = Vec::from([
+        let file_command = TestCommand {
+            command: "go".to_owned(),
+            args: ["test".to_owned(), "-count=1".to_owned()]
+                .into_iter()
+                .chain([file.parent().unwrap().to_str().unwrap().to_owned()])
+                .collect::<Vec<_>>(),
+        };
+
+        let file_and_line_command = TestCommand {
+            command: "go".to_owned(),
+            args: ["test".to_owned(), "-count=1".to_owned()]
+                .into_iter()
+                .chain(
+                    function_name
+                        .map(|function_name| match function_name {
+                            FuncName::Func(name) => ["-run".to_owned(), format!("{name}$")],
+                            FuncName::Method(name) => ["-run".to_owned(), format!("/{name}$")],
+                        })
+                        .into_iter()
+                        .flatten(),
+                )
+                .chain([file.parent().unwrap().to_str().unwrap().to_owned()])
+                .collect::<Vec<_>>(),
+        };
+
+        let file_debugger_command = TestCommand {
+            command: "dlv".to_owned(),
+            args: Vec::from([
+                "test".to_owned(),
+                file.parent().unwrap().to_str().unwrap().to_owned(),
+                "--headless".to_owned(),
+                "-l".to_owned(),
+                "127.0.0.1:38697".to_owned(),
+            ]),
+        };
+
+        let file_and_line_debugger_command = TestCommand {
+            command: "dlv".to_owned(),
+            args: Vec::from([
                 "test".to_owned(),
                 file.parent().unwrap().to_str().unwrap().to_owned(),
                 "--headless".to_owned(),
@@ -69,57 +104,25 @@ impl Language for GoImpl {
                 "127.0.0.1:38697".to_owned(),
                 "--".to_owned(),
                 "-test.run".to_owned(),
-            ]);
-
-            if let Some(function_name) = function_name {
-                match function_name {
-                    FuncName::Func(name) => {
-                        args.push(format!("{name}$"));
-                    }
-                    FuncName::Method(name) => {
-                        args.push(format!("/{name}$"));
-                    }
+            ])
+            .into_iter()
+            .chain(function_name.map(|function_name| match function_name {
+                FuncName::Func(name) => {
+                    format!("{name}$")
                 }
-            }
-
-            Ok(TestCommand {
-                command: "dlv".to_owned(),
-                args,
-                statusline: format!(
-                    "🪲 {}",
-                    if let Some(function_name) = function_name {
-                        function_name.to_owned()
-                    } else {
-                        file.file_name().unwrap().to_str().unwrap().to_owned()
-                    }
-                ),
-            })
-        } else {
-            let mut args = Vec::from(["test".to_owned(), "-count=1".to_owned()]);
-
-            if let Some(function_name) = function_name {
-                match function_name {
-                    FuncName::Func(name) => {
-                        args.extend(["-run".to_owned(), format!("{name}$")]);
-                    }
-                    FuncName::Method(name) => {
-                        args.extend(["-run".to_owned(), format!("/{name}$")]);
-                    }
+                FuncName::Method(name) => {
+                    format!("/{name}$")
                 }
-            }
+            }))
+            .collect(),
+        };
 
-            args.push(file.parent().unwrap().to_str().unwrap().to_owned());
-
-            Ok(TestCommand {
-                command: "go".to_owned(),
-                args,
-                statusline: if let Some(function_name) = function_name {
-                    function_name.to_owned()
-                } else {
-                    file.file_name().unwrap().to_str().unwrap().to_owned()
-                },
-            })
-        }
+        Ok(TestCommands {
+            file: file_command,
+            file_and_line: file_and_line_command,
+            file_debugger: Some(file_debugger_command),
+            file_and_line_debugger: Some(file_and_line_debugger_command),
+        })
     }
 }
 
@@ -149,12 +152,4 @@ impl GoImpl {
 enum FuncName<'a> {
     Func(&'a str),
     Method(&'a str),
-}
-
-impl<'a> FuncName<'a> {
-    fn to_owned(self) -> String {
-        match self {
-            FuncName::Func(s) | FuncName::Method(s) => s.to_string(),
-        }
-    }
 }

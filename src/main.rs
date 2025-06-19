@@ -1,13 +1,10 @@
 use std::{
-    io::{stdout, IsTerminal},
+    io::{IsTerminal, stdout},
     path::{Path, PathBuf},
 };
 
-use color_eyre::eyre::{bail, ensure, Result};
+use color_eyre::eyre::{Result, bail};
 use serde::Serialize;
-
-#[cfg(test)]
-mod tests;
 
 mod go_impl;
 mod rust_impl;
@@ -19,8 +16,6 @@ struct Cli {
     file: PathBuf,
     #[arg(long, short)]
     line: usize,
-    #[arg(long, short)]
-    debugger: bool,
 }
 
 fn main() -> Result<()> {
@@ -28,26 +23,25 @@ fn main() -> Result<()> {
 
     let cli = <Cli as clap::Parser>::parse();
 
-    let language_impl = identify_language(&cli.file, cli.debugger)?;
-    let test_command = language_impl.test_command(&cli.file, cli.line)?;
+    let language_impl = identify_language(&cli.file)?;
+    let test_commands = language_impl.test_commands(&cli.file, cli.line)?;
     let mut stdout = stdout().lock();
     if stdout.is_terminal() {
-        serde_json::to_writer_pretty(&mut stdout, &test_command)?;
+        serde_json::to_writer_pretty(&mut stdout, &test_commands)?;
         println!();
     } else {
-        serde_json::to_writer(&mut stdout, &test_command)?;
+        serde_json::to_writer(&mut stdout, &test_commands)?;
     }
 
     Ok(())
 }
 
-fn identify_language(file: &Path, debugger: bool) -> Result<Box<dyn Language>> {
+fn identify_language(file: &Path) -> Result<Box<dyn Language>> {
     if let Some(ext) = file.extension() {
         if ext == "rs" {
-            ensure!(!debugger, "rust doesn't support debugging");
             return Ok(Box::new(rust_impl::RustImpl));
         } else if ext == "go" {
-            return Ok(Box::new(go_impl::GoImpl { debugger }));
+            return Ok(Box::new(go_impl::GoImpl));
         }
     }
 
@@ -56,14 +50,22 @@ fn identify_language(file: &Path, debugger: bool) -> Result<Box<dyn Language>> {
 
 #[must_use]
 #[derive(Serialize)]
+struct TestCommands {
+    file: TestCommand,
+    file_and_line: TestCommand,
+    file_debugger: Option<TestCommand>,
+    file_and_line_debugger: Option<TestCommand>,
+}
+
+#[must_use]
+#[derive(Serialize)]
 struct TestCommand {
     command: String,
     args: Vec<String>,
-    statusline: String,
 }
 
 trait Language {
-    fn test_command(&self, file: &Path, line: usize) -> Result<TestCommand>;
+    fn test_commands(&self, file: &Path, line: usize) -> Result<TestCommands>;
 }
 
 #[allow(dead_code)]

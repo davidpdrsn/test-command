@@ -7,13 +7,13 @@ use color_eyre::eyre::{Context as _, ContextCompat, Result, bail};
 use serde::Deserialize;
 use tree_sitter::{Node, Parser};
 
-use crate::{Language, TestCommand, tree_sitter_utils::walk_children};
+use crate::{Language, TestCommand, TestCommands, tree_sitter_utils::walk_children};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RustImpl;
 
 impl Language for RustImpl {
-    fn test_command(&self, file: &Path, line: usize) -> Result<TestCommand> {
+    fn test_commands(&self, file: &Path, line: usize) -> Result<TestCommands> {
         let cargo_toml = self.parent_cargo_toml()?;
         let cargo_toml = std::fs::read_to_string(cargo_toml)?;
         let cargo_toml = toml::from_str::<CargoToml>(&cargo_toml)?;
@@ -51,33 +51,51 @@ impl Language for RustImpl {
             }
         };
 
-        let mut path = Vec::new();
-        path.extend(self.parent_file_mods(file)?);
-        path.extend(self.parent_source_mods(node_at_line, &source)?);
+        let file_command = TestCommand {
+            command: "cargo".to_string(),
+            args: Vec::from([
+                "test".to_owned(),
+                "--all-features".to_owned(),
+                "-p".to_owned(),
+                cargo_toml.package.name.clone(),
+                self.parent_file_mods(file)?.join("::"),
+            ]),
+        };
 
-        if let Some(parent_function) = self.parent_test_function(node_at_line, &source)? {
-            let identifier = walk_children(parent_function, |node| {
-                if node.kind() == "identifier" {
-                    return ControlFlow::Break(node);
-                }
-                ControlFlow::Continue(())
-            })
-            .context("failed to find function identifier")?;
-
-            let function_name = identifier.utf8_text(source.as_bytes())?;
-            path.push(function_name.to_owned());
-        }
-
-        Ok(TestCommand {
-            command: "cargo".to_owned(),
+        let file_and_line_command = TestCommand {
+            command: "cargo".to_string(),
             args: Vec::from([
                 "test".to_owned(),
                 "--all-features".to_owned(),
                 "-p".to_owned(),
                 cargo_toml.package.name,
-                path.join("::"),
+                std::iter::empty()
+                    .chain(self.parent_file_mods(file)?)
+                    .chain(self.parent_source_mods(node_at_line, &source)?)
+                    .chain(
+                        self.parent_test_function(node_at_line, &source)?
+                            .map(|parent_function| -> Result<_> {
+                                let identifier = walk_children(parent_function, |node| {
+                                    if node.kind() == "identifier" {
+                                        return ControlFlow::Break(node);
+                                    }
+                                    ControlFlow::Continue(())
+                                })
+                                .context("failed to find function identifier")?;
+                                Ok(identifier.utf8_text(source.as_bytes())?.to_owned())
+                            })
+                            .transpose()?,
+                    )
+                    .collect::<Vec<_>>()
+                    .join("::"),
             ]),
-            statusline: path.join("::"),
+        };
+
+        Ok(TestCommands {
+            file: file_command,
+            file_and_line: file_and_line_command,
+            file_debugger: None,
+            file_and_line_debugger: None,
         })
     }
 }
