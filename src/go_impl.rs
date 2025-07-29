@@ -73,8 +73,8 @@ impl Language for GoImpl {
                 .chain(
                     function_name
                         .map(|function_name| match function_name {
-                            FuncName::Func(name) => ["-run".to_owned(), format!("{name}$")],
-                            FuncName::Method(name) => ["-run".to_owned(), format!("/{name}$")],
+                            FuncName::Func(name) => ["-run".to_owned(), format!("{name}\\$")],
+                            FuncName::Method(name) => ["-run".to_owned(), format!("/{name}\\$")],
                         })
                         .into_iter()
                         .flatten(),
@@ -108,10 +108,10 @@ impl Language for GoImpl {
             .into_iter()
             .chain(function_name.map(|function_name| match function_name {
                 FuncName::Func(name) => {
-                    format!("{name}$")
+                    format!("{name}\\$")
                 }
                 FuncName::Method(name) => {
-                    format!("/{name}$")
+                    format!("/{name}\\$")
                 }
             }))
             .collect(),

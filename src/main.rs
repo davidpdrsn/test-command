@@ -67,13 +67,3 @@ struct TestCommand {
 trait Language {
     fn test_commands(&self, file: &Path, line: usize) -> Result<TestCommands>;
 }
-
-#[allow(dead_code)]
-fn command<I>(command: &str, args: I) -> Result<String>
-where
-    I: IntoIterator<Item: AsRef<std::ffi::OsStr>>,
-{
-    let output = std::process::Command::new(command).args(args).output()?;
-    color_eyre::eyre::ensure!(output.status.success(), "`{}` failed", command);
-    Ok(String::from_utf8(output.stdout)?)
-}
