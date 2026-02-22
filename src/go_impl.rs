@@ -117,7 +117,17 @@ impl Language for GoImpl {
             .collect(),
         };
 
+        let human = {
+            let file_name = file.file_name().unwrap();
+            if let Some(function_name) = function_name {
+                format!("{}:{}:{}", file_name.display(), function_name.as_str(), line)
+            } else {
+                format!("{}:{}", file_name.display(), line)
+            }
+        };
+
         Ok(TestCommands {
+            human,
             file: file_command,
             file_and_line: file_and_line_command,
             file_debugger: Some(file_debugger_command),
@@ -152,4 +162,12 @@ impl GoImpl {
 enum FuncName<'a> {
     Func(&'a str),
     Method(&'a str),
+}
+
+impl<'a> FuncName<'a> {
+    fn as_str(self) -> &'a str {
+        match self {
+            FuncName::Func(name) | FuncName::Method(name) => name,
+        }
+    }
 }

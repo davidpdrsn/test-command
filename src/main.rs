@@ -51,6 +51,7 @@ fn identify_language(file: &Path) -> Result<Box<dyn Language>> {
 #[must_use]
 #[derive(Serialize)]
 struct TestCommands {
+    human: String,
     file: TestCommand,
     file_and_line: TestCommand,
     file_debugger: Option<TestCommand>,

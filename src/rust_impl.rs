@@ -91,7 +91,39 @@ impl Language for RustImpl {
             ]),
         };
 
+        let human = {
+            let mut file_name = file.file_name().unwrap().to_str().unwrap().to_owned();
+            if file_name == "mod.rs" {
+                if let Some(with_parent) = file
+                    .parent()
+                    .and_then(|parent| parent.file_name())
+                    .map(|parent| format!("{}/{}", parent.display(), file_name))
+                {
+                    file_name = with_parent;
+                }
+            }
+            if let Some(test_function) = self
+                .parent_test_function(node_at_line, &source)
+                .ok()
+                .flatten()
+                .and_then(|test_function| {
+                    let test_function_ident = walk_children(test_function, |node| {
+                        if node.kind() == "identifier" {
+                            return ControlFlow::Break(node);
+                        }
+                        ControlFlow::Continue(())
+                    })?;
+                    test_function_ident.utf8_text(source.as_bytes()).ok()
+                })
+            {
+                format!("{file_name}:{test_function}:{line}")
+            } else {
+                format!("{file_name}:{line}")
+            }
+        };
+
         Ok(TestCommands {
+            human,
             file: file_command,
             file_and_line: file_and_line_command,
             file_debugger: None,
