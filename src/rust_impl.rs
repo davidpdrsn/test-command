@@ -1,7 +1,4 @@
-use std::{
-    ops::ControlFlow,
-    path::{Path, PathBuf},
-};
+use std::{ops::ControlFlow, path::Path};
 
 use color_eyre::eyre::{Context as _, ContextCompat, Result, bail};
 use serde::Deserialize;
@@ -14,9 +11,7 @@ pub struct RustImpl;
 
 impl Language for RustImpl {
     fn test_commands(&self, file: &Path, line: usize) -> Result<TestCommands> {
-        let cargo_toml = self.parent_cargo_toml()?;
-        let cargo_toml = std::fs::read_to_string(cargo_toml)?;
-        let cargo_toml = toml::from_str::<CargoToml>(&cargo_toml)?;
+        let package_name = self.parent_package_name(file)?;
 
         let mut parser = Parser::new();
 
@@ -54,10 +49,11 @@ impl Language for RustImpl {
         let file_command = TestCommand {
             command: "cargo".to_string(),
             args: Vec::from([
-                "test".to_owned(),
+                "nextest".to_owned(),
+                "run".to_owned(),
                 "--all-features".to_owned(),
                 "-p".to_owned(),
-                cargo_toml.package.name.clone(),
+                package_name.clone(),
                 self.parent_file_mods(file)?.join("::"),
             ]),
         };
@@ -65,10 +61,11 @@ impl Language for RustImpl {
         let file_and_line_command = TestCommand {
             command: "cargo".to_string(),
             args: Vec::from([
-                "test".to_owned(),
+                "nextest".to_owned(),
+                "run".to_owned(),
                 "--all-features".to_owned(),
                 "-p".to_owned(),
-                cargo_toml.package.name,
+                package_name,
                 std::iter::empty()
                     .chain(self.parent_file_mods(file)?)
                     .chain(self.parent_source_mods(node_at_line, &source)?)
@@ -173,19 +170,37 @@ impl RustImpl {
         Ok(mods)
     }
 
-    fn parent_cargo_toml(self) -> Result<PathBuf> {
-        #[derive(Deserialize)]
-        struct CargoMetadata {
-            workspace_root: String,
-        }
-
+    fn parent_package_name(self, file: &Path) -> Result<String> {
         let output = std::process::Command::new("cargo")
-            .args(["metadata"])
+            .args(["metadata", "--format-version", "1", "--no-deps"])
             .output()
             .context("`cargo metadata` failed")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("`cargo metadata` failed: {stderr}");
+        }
+
         let output = String::from_utf8(output.stdout)?;
         let output = serde_json::from_str::<CargoMetadata>(&output)?;
-        Ok(Path::new(&output.workspace_root).join("Cargo.toml"))
+
+        let file = std::fs::canonicalize(file)?;
+
+        output
+            .packages
+            .into_iter()
+            .filter_map(|package| {
+                let manifest_path = std::fs::canonicalize(package.manifest_path).ok()?;
+                let package_root = manifest_path.parent()?;
+                if file.starts_with(package_root) {
+                    Some((package_root.components().count(), package.name))
+                } else {
+                    None
+                }
+            })
+            .max_by_key(|(path_depth, _)| *path_depth)
+            .map(|(_, package_name)| package_name)
+            .with_context(|| format!("failed to find cargo package for file: {}", file.display()))
     }
 
     fn parent_file_mods(self, path: &Path) -> Result<Vec<String>> {
@@ -228,11 +243,12 @@ impl RustImpl {
 }
 
 #[derive(Deserialize, Debug)]
-struct CargoToml {
-    package: CargoTomlPackage,
+struct CargoMetadata {
+    packages: Vec<CargoPackage>,
 }
 
 #[derive(Deserialize, Debug)]
-struct CargoTomlPackage {
+struct CargoPackage {
     name: String,
+    manifest_path: String,
 }
